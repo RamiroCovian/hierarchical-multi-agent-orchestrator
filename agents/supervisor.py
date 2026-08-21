@@ -1,4 +1,4 @@
-"""Nodo supervisor: routing, validación y cierre del flujo."""
+"""Nodo supervisor: routing y cierre del flujo."""
 
 from typing import Literal
 
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from llm import get_llm
 from state import NextAgent, OrchestratorState
 
-DEFAULT_MAX_STEPS = 6
+DEFAULT_MAX_STEPS = 8
 
 SUPERVISOR_SYSTEM_PROMPT = """Sos el supervisor de un orquestador multi-agente.
 
@@ -16,18 +16,19 @@ Dada la conversación/estado actual, ¿quién debe intervenir ahora o es momento
 
 Nodos disponibles:
 - research_agent: busca información externa
-- analyst_agent: analiza hallazgos (sentimiento, puntos clave, validación)
+- analyst_agent: analiza hallazgos (sentimiento, puntos clave, esquemas)
+- validation_agent: aplica la rúbrica de calidad antes del cierre
 - FINISH: cerrar con una respuesta final sintetizada
 
-Rúbrica de validación antes de FINISH (todas deben cumplirse):
-1. Hay research_findings no vacíos y relevantes a la consulta
-2. Hay analysis_result no vacío basado en esos hallazgos
-3. Podés redactar una respuesta final que responda la consulta
+Reglas de enrutamiento:
+1. Si falta investigación → research_agent
+2. Si hay research pero falta análisis → analyst_agent
+3. Si hay research y análisis pero validation_passed es false → validation_agent
+4. Solo podés elegir FINISH si validation_passed es true
+5. Si validation_feedback pide refinar, reenviá a research_agent o analyst_agent
 
-Flujo típico: research_agent → analyst_agent → FINISH.
-Evítá bucles innecesarios. Si falta investigación → research_agent.
-Si hay research pero falta análisis → analyst_agent.
-Si ambos son suficientes → FINISH con final_response en español.
+Flujo típico: research_agent → analyst_agent → validation_agent → FINISH.
+Evítá bucles innecesarios. Si finalizás, redactá final_response en español.
 """
 
 
@@ -35,16 +36,12 @@ class SupervisorDecision(BaseModel):
     """Decisión estructurada de routing del supervisor."""
 
     next_agent: NextAgent = Field(
-        description="Nodo siguiente: research_agent, analyst_agent o FINISH"
+        description=(
+            "Nodo siguiente: research_agent, analyst_agent, "
+            "validation_agent o FINISH"
+        )
     )
     reasoning: str = Field(description="Justificación breve de la decisión")
-    validation_passed: bool = Field(
-        description="True solo si la rúbrica permite finalizar"
-    )
-    validation_feedback: str = Field(
-        default="",
-        description="Qué falta o hay que refinar si no se puede finalizar",
-    )
     final_response: str = Field(
         default="",
         description="Respuesta final al usuario solo si next_agent es FINISH",
@@ -52,7 +49,7 @@ class SupervisorDecision(BaseModel):
 
 
 def supervisor_node(state: OrchestratorState) -> dict:
-    """Decide el próximo agente, valida resultados o finaliza la tarea."""
+    """Decide el próximo agente o finaliza la tarea tras validación."""
     step_count = int(state.get("step_count") or 0)
 
     if step_count >= DEFAULT_MAX_STEPS:
@@ -77,8 +74,21 @@ def supervisor_node(state: OrchestratorState) -> dict:
         )
 
     next_agent = decision.next_agent
-    if next_agent not in ("research_agent", "analyst_agent", "FINISH"):
+    allowed = ("research_agent", "analyst_agent", "validation_agent", "FINISH")
+    if next_agent not in allowed:
         next_agent = "FINISH"
+
+    # Gate duro: no cerrar sin validación aprobada
+    validation_passed = bool(state.get("validation_passed"))
+    if next_agent == "FINISH" and not validation_passed:
+        has_research = bool((state.get("research_findings") or "").strip())
+        has_analysis = bool((state.get("analysis_result") or "").strip())
+        if has_research and has_analysis:
+            next_agent = "validation_agent"
+        elif has_research:
+            next_agent = "analyst_agent"
+        else:
+            next_agent = "research_agent"
 
     if next_agent == "FINISH":
         final_response = (decision.final_response or "").strip()
@@ -88,8 +98,6 @@ def supervisor_node(state: OrchestratorState) -> dict:
         return {
             "next_agent": "FINISH",
             "task_completed": True,
-            "validation_passed": True,
-            "validation_feedback": "",
             "final_response": final_response,
             "messages": [
                 AIMessage(
@@ -103,8 +111,6 @@ def supervisor_node(state: OrchestratorState) -> dict:
     return {
         "next_agent": next_agent,
         "task_completed": False,
-        "validation_passed": bool(decision.validation_passed),
-        "validation_feedback": (decision.validation_feedback or "").strip(),
         "messages": [
             AIMessage(
                 content=f"Supervisor -> {next_agent}. {decision.reasoning}",
@@ -117,10 +123,15 @@ def supervisor_node(state: OrchestratorState) -> dict:
 
 def route_after_supervisor(
     state: OrchestratorState,
-) -> Literal["research_agent", "analyst_agent", "FINISH"]:
+) -> Literal["research_agent", "analyst_agent", "validation_agent", "FINISH"]:
     """Mapea la decisión del supervisor a nodos del grafo (aristas condicionales)."""
     next_agent = state.get("next_agent") or "FINISH"
-    if next_agent in ("research_agent", "analyst_agent", "FINISH"):
+    if next_agent in (
+        "research_agent",
+        "analyst_agent",
+        "validation_agent",
+        "FINISH",
+    ):
         return next_agent
     return "FINISH"
 
@@ -131,6 +142,7 @@ def _build_state_snapshot(state: OrchestratorState) -> str:
         f"- user_query: {state.get('user_query') or 'N/A'}\n"
         f"- research_findings: {state.get('research_findings') or 'N/A'}\n"
         f"- analysis_result: {state.get('analysis_result') or 'N/A'}\n"
+        f"- validation_passed: {bool(state.get('validation_passed'))}\n"
         f"- validation_feedback: {state.get('validation_feedback') or 'N/A'}\n"
         f"- step_count: {int(state.get('step_count') or 0)}\n"
         f"- max_steps: {DEFAULT_MAX_STEPS}\n"
@@ -142,7 +154,7 @@ def _force_finish(state: OrchestratorState, reason: str) -> dict:
     return {
         "next_agent": "FINISH",
         "task_completed": True,
-        "validation_passed": False,
+        "validation_passed": bool(state.get("validation_passed")),
         "validation_feedback": reason,
         "final_response": final_response,
         "messages": [

@@ -64,6 +64,7 @@ def analyst_agent_node(state: OrchestratorState) -> dict:
 
     return {
         "analysis_result": analysis,
+        "validation_passed": False,
         "messages": [AIMessage(content=analysis, name="analyst_agent")],
         "step_count": int(state.get("step_count") or 0) + 1,
     }

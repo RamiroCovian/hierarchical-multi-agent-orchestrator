@@ -4,7 +4,12 @@ from typing import Literal
 
 from langgraph.graph import MessagesState
 
-NextAgent = Literal["research_agent", "analyst_agent", "FINISH"]
+NextAgent = Literal[
+    "research_agent",
+    "analyst_agent",
+    "validation_agent",
+    "FINISH",
+]
 
 
 class OrchestratorState(MessagesState):
