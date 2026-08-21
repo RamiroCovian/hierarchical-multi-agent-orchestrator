@@ -56,6 +56,7 @@ python main.py --mermaid
 │   └── supervisor.py
 ├── graph.py                 # StateGraph compilado
 ├── main.py                  # CLI
+├── tests/                   # Tests unitarios opcionales
 ├── demo.ipynb               # Demo del flujo de delegación
 └── consignas.md
 ```
@@ -86,6 +87,14 @@ Modelos opcionales: `OPENAI_MODEL`, `ANTHROPIC_MODEL`, `GEMINI_MODEL`.
 python main.py "Que es LangGraph y que tan util es para multiagentes?"
 python main.py --mermaid
 ```
+
+## Tests (opcionales)
+
+```bash
+pytest
+```
+
+Cubren routing del supervisor, gate de `FINISH`, guardas del `validation_agent`, tools de análisis y topología del grafo (sin llamar APIs reales).
 
 ## Demo
 
