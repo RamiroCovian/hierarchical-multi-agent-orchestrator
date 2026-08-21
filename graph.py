@@ -8,17 +8,19 @@ from agents import (
     research_agent_node,
     route_after_supervisor,
     supervisor_node,
+    validation_agent_node,
 )
 from state import OrchestratorState
 
 
 def build_graph():
-    """Construye y compila el grafo supervisor -> especialistas -> cierre."""
+    """Construye y compila el grafo supervisor -> especialistas -> validación."""
     workflow = StateGraph(OrchestratorState)
 
     workflow.add_node("supervisor", supervisor_node)
     workflow.add_node("research_agent", research_agent_node)
     workflow.add_node("analyst_agent", analyst_agent_node)
+    workflow.add_node("validation_agent", validation_agent_node)
 
     workflow.add_edge(START, "supervisor")
     workflow.add_conditional_edges(
@@ -27,11 +29,13 @@ def build_graph():
         {
             "research_agent": "research_agent",
             "analyst_agent": "analyst_agent",
+            "validation_agent": "validation_agent",
             "FINISH": END,
         },
     )
     workflow.add_edge("research_agent", "supervisor")
     workflow.add_edge("analyst_agent", "supervisor")
+    workflow.add_edge("validation_agent", "supervisor")
 
     return workflow.compile()
 

@@ -62,6 +62,7 @@ def research_agent_node(state: OrchestratorState) -> dict:
 
     return {
         "research_findings": findings,
+        "validation_passed": False,
         "messages": [AIMessage(content=findings, name="research_agent")],
         "step_count": int(state.get("step_count") or 0) + 1,
     }
